@@ -1,0 +1,33 @@
+swamp serve has been deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Service:  {{ include "swamp-serve.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+Scheme:   {{ if .Values.tls.enabled }}wss / https (TLS enabled){{ else }}ws / http (TLS disabled){{ end }}
+Auth:     {{ .Values.serve.authMode }}
+
+1. Wait for the pod to become ready:
+
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "swamp-serve.fullname" . }}
+
+2. Port-forward and hit the (unauthenticated) health endpoint:
+
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "swamp-serve.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+   curl -k {{ if .Values.tls.enabled }}https{{ else }}http{{ end }}://127.0.0.1:{{ .Values.service.port }}/
+
+3. Run the bundled Helm test (probes the health endpoint from inside the cluster):
+
+   helm -n {{ .Release.Namespace }} test {{ .Release.Name }}
+
+{{- if eq .Values.serve.authMode "token" }}
+
+NOTE: authMode is "token". The health endpoint is open, but the WebSocket API
+requires a bearer token for principals listed in serve.admins:
+{{- range .Values.serve.admins }}
+  - {{ . }}
+{{- end }}
+{{- end }}
+{{- if and .Values.tls.enabled (not .Values.tls.existingSecret) (not .Values.tls.cert) }}
+
+NOTE: a self-signed TLS certificate was generated for this release. Clients must
+trust it (or use -k / insecure) — supply your own via tls.existingSecret or
+tls.cert/tls.key for production.
+{{- end }}

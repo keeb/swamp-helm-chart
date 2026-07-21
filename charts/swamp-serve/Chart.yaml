@@ -1,0 +1,19 @@
+apiVersion: v2
+name: swamp-serve
+description: A Helm chart for running `swamp serve` — the swamp WebSocket API server for workflow and model execution.
+type: application
+version: 0.1.0
+# appVersion tracks the swamp binary baked into the image. Override the image
+# tag in values.yaml when you ship a specific build.
+appVersion: "latest"
+keywords:
+  - swamp
+  - serve
+  - websocket
+  - automation
+home: https://swamp-club.com
+sources:
+  - https://github.com/swamp-club/swamp
+maintainers:
+  - name: swamp
+    url: https://swamp-club.com

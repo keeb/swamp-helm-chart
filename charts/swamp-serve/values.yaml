@@ -1,0 +1,121 @@
+# Default values for swamp-serve.
+
+replicaCount: 1
+
+image:
+  repository: swamp-serve
+  tag: local
+  # Use IfNotPresent so a `kind load`-ed local image is preferred over a registry pull.
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# ---------------------------------------------------------------------------
+# `swamp serve` configuration.
+#
+# IMPORTANT: swamp refuses to bind off-loopback (anything other than 127.0.0.1)
+# unless BOTH TLS (tls.enabled) AND authentication (serve.authMode token|oauth)
+# are configured. Because a Kubernetes Service must reach the pod over its pod
+# IP, host is 0.0.0.0 and TLS + token auth are on by default. Do not set
+# host: 127.0.0.1 unless you only exec into the pod — the Service/probes will
+# not be able to reach it.
+# ---------------------------------------------------------------------------
+serve:
+  host: "0.0.0.0"
+  port: 9090
+  # Directory holding the swamp repository (models, workflows, extensions).
+  # An init container runs `swamp repo init` here on first start if empty.
+  repoDir: /repo
+  # none | token | oauth. Off-loopback requires token or oauth.
+  authMode: token
+  # Principal IDs granted admin access (used by token/oauth modes).
+  admins:
+    - "user:token|admin"
+  # Disable the built-in scheduler (scheduled workflow execution).
+  noSchedule: false
+  # Extra hostnames to trust for Host-header validation when bound off-loopback.
+  trustedHosts: []
+  # Any additional raw flags passed verbatim to `swamp serve`.
+  extraArgs: []
+
+# ---------------------------------------------------------------------------
+# TLS. Required whenever serve.host is off-loopback (the default).
+#   - existingSecret: reference a pre-existing kubernetes.io/tls secret.
+#   - cert/key:       inline PEM material.
+#   - otherwise:      a self-signed cert is generated at install time with SANs
+#                     covering the in-cluster Service DNS names. It is reused
+#                     across upgrades via a lookup of the existing secret.
+# ---------------------------------------------------------------------------
+tls:
+  enabled: true
+  existingSecret: ""
+  cert: ""
+  key: ""
+
+# Repo and HOME directories. Use persistence to keep the repo/datastore and the
+# embedded runtime (~/.swamp) across restarts; otherwise emptyDir is used.
+persistence:
+  repo:
+    enabled: false
+    size: 1Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+  home:
+    enabled: false
+    size: 1Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+
+service:
+  type: ClusterIP
+  port: 9090
+  annotations: {}
+
+# Probes hit the unauthenticated GET / health endpoint. Scheme follows tls.enabled.
+probes:
+  readiness:
+    initialDelaySeconds: 3
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+resources: {}
+  # limits:
+  #   cpu: 1
+  #   memory: 1Gi
+  # requests:
+  #   cpu: 250m
+  #   memory: 512Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

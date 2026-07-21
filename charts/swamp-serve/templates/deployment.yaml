@@ -1,0 +1,165 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "swamp-serve.fullname" . }}
+  labels:
+    {{- include "swamp-serve.labels" . | nindent 4 }}
+spec:
+  # swamp serve holds a local datastore; keep it single-writer.
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "swamp-serve.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "swamp-serve.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- if and .Values.tls.enabled (not .Values.tls.existingSecret) }}
+        # Roll pods when the generated cert changes.
+        checksum/tls: {{ include (print $.Template.BasePath "/tls-secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "swamp-serve.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: repo-init
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              REPO="{{ .Values.serve.repoDir }}"
+              if [ ! -f "${REPO}/.swamp.yaml" ]; then
+                echo "Initializing swamp repository at ${REPO}"
+                swamp repo init "${REPO}" --no-telemetry --log
+              else
+                echo "swamp repository already present at ${REPO}"
+              fi
+          env:
+            - name: HOME
+              value: /home/swamp
+          volumeMounts:
+            - name: home
+              mountPath: /home/swamp
+            - name: repo
+              mountPath: {{ .Values.serve.repoDir }}
+      containers:
+        - name: serve
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command:
+            - swamp
+            - serve
+          args:
+            - "--repo-dir={{ .Values.serve.repoDir }}"
+            - "--host={{ .Values.serve.host }}"
+            - "--port={{ .Values.serve.port }}"
+            - "--no-telemetry"
+            {{- if .Values.serve.noSchedule }}
+            - "--no-schedule"
+            {{- end }}
+            {{- if ne .Values.serve.authMode "none" }}
+            - "--auth-mode={{ .Values.serve.authMode }}"
+            {{- end }}
+            {{- if .Values.serve.admins }}
+            - "--admins={{ join "," .Values.serve.admins }}"
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - "--cert-file=/tls/tls.crt"
+            - "--key-file=/tls/tls.key"
+            {{- end }}
+            {{- if .Values.serve.trustedHosts }}
+            - "--trusted-hosts={{ join "," .Values.serve.trustedHosts }}"
+            {{- end }}
+            {{- range .Values.serve.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: HOME
+              value: /home/swamp
+          ports:
+            - name: serve
+              containerPort: {{ .Values.serve.port }}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /
+              port: serve
+              scheme: {{ if .Values.tls.enabled }}HTTPS{{ else }}HTTP{{ end }}
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: serve
+              scheme: {{ if .Values.tls.enabled }}HTTPS{{ else }}HTTP{{ end }}
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: home
+              mountPath: /home/swamp
+            - name: repo
+              mountPath: {{ .Values.serve.repoDir }}
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: home
+          {{- if .Values.persistence.home.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "swamp-serve.fullname" . }}-home
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: repo
+          {{- if .Values.persistence.repo.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "swamp-serve.fullname" . }}-repo
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ include "swamp-serve.tlsSecretName" . }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

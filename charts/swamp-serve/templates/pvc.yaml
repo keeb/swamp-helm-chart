@@ -1,0 +1,35 @@
+{{- if .Values.persistence.repo.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "swamp-serve.fullname" . }}-repo
+  labels:
+    {{- include "swamp-serve.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.repo.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.repo.size }}
+  {{- if .Values.persistence.repo.storageClass }}
+  storageClassName: {{ .Values.persistence.repo.storageClass }}
+  {{- end }}
+{{- end }}
+{{- if .Values.persistence.home.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "swamp-serve.fullname" . }}-home
+  labels:
+    {{- include "swamp-serve.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.home.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.home.size }}
+  {{- if .Values.persistence.home.storageClass }}
+  storageClassName: {{ .Values.persistence.home.storageClass }}
+  {{- end }}
+{{- end }}
