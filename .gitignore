@@ -1,2 +1,5 @@
-# Staged swamp binary copied into the Docker build context by build.sh
-docker/swamp
+# Packaged charts
+*.tgz
+
+# swamp working state (audit logs, etc.) if commands are run from this dir
+.swamp/

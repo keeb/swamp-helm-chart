@@ -42,10 +42,32 @@ helm -n demo test serve
 ## Requirements
 
 - `docker`, `kubectl`, `helm`, and (for local verification) `kind`.
-- **The `swamp` binary must be on your PATH to build the image** — `docker/build.sh`
-  copies it into the build context. If you don't have swamp installed, either
-  install it first or set `image.repository`/`image.tag` to a pre-built image
-  someone pushed to a registry and skip the build step.
+- The image is self-contained: the swamp CLI is bootstrapped at build time by the
+  official installer (`curl -fsSL https://swamp-club.com/install.sh | sh`), so no
+  local swamp binary is needed — just Docker and network access. Pin a release
+  with `SWAMP_VERSION=<version> ./deploy/docker/build.sh`.
+
+## Deploying to a real (remote) cluster
+
+A remote cluster can't use a local `kind load` — it pulls the image from a
+registry. Build, push, then point the chart at it:
+
+```bash
+# 1. Build and push to a registry your cluster can pull from
+IMAGE=ghcr.io/<you>/swamp-serve:0.1.0 ./deploy/docker/build.sh --push
+
+# 2. Install, overriding the image (and pull secret if the registry is private)
+helm -n swamp upgrade --install serve ./deploy/charts/swamp-serve \
+  --create-namespace \
+  --set image.repository=ghcr.io/<you>/swamp-serve \
+  --set image.tag=0.1.0 \
+  --set image.pullPolicy=IfNotPresent
+```
+
+For production also consider: a real TLS cert via `tls.existingSecret`
+(e.g. cert-manager) instead of the generated self-signed one, real
+`serve.admins` principals, and `persistence.*` PVCs so the repo/datastore
+survive restarts.
 
 ## How it works
 
