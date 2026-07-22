@@ -80,6 +80,35 @@ service:
   port: 9090
   annotations: {}
 
+# ---------------------------------------------------------------------------
+# Ingress (ingress-nginx). The controller terminates client TLS and reverse-
+# proxies to the swamp serve Service.
+#
+# IMPORTANT: swamp serve only listens on HTTPS (off-loopback binding requires
+# TLS), so the ingress must speak TLS to the backend — the
+# `backend-protocol: HTTPS` annotation below is required and injected by
+# default. swamp serve is also a WebSocket server, so the proxy timeouts keep
+# long-lived upgraded connections open. ingress-nginx does not verify the
+# backend certificate, so swamp's self-signed cert is fine.
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: nginx
+  path: /
+  pathType: Prefix
+  # Hostnames routed to this service.
+  hosts:
+    - swamp.example.com
+  # Extra annotations are merged over the required swamp-specific defaults
+  # (backend-protocol + WebSocket timeouts); your values win on key conflicts.
+  # e.g. nginx.ingress.kubernetes.io/server-alias: swamp-alt.example.com
+  annotations: {}
+  tls:
+    enabled: true
+    # Reference an existing TLS secret (e.g. from cert-manager). If empty and
+    # tls.enabled is true, a self-signed cert is generated for `hosts`.
+    secretName: ""
+
 # Probes hit the unauthenticated GET / health endpoint. Scheme follows tls.enabled.
 probes:
   readiness:

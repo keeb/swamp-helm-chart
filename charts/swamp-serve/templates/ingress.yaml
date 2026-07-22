@@ -1,0 +1,76 @@
+{{- if .Values.ingress.enabled -}}
+{{- $fullname := include "swamp-serve.fullname" . -}}
+{{- $svcPort := .Values.service.port -}}
+{{- $tlsSecret := .Values.ingress.tls.secretName | default (printf "%s-ingress-tls" $fullname) -}}
+{{/*
+Required swamp-specific annotations, merged UNDER the user's annotations so the
+user can override but they are present by default:
+  - backend-protocol HTTPS: swamp serve only listens on HTTPS off-loopback.
+  - proxy read/send timeouts: keep long-lived WebSocket connections open.
+*/}}
+{{- $required := dict
+      "nginx.ingress.kubernetes.io/backend-protocol" "HTTPS"
+      "nginx.ingress.kubernetes.io/proxy-read-timeout" "3600"
+      "nginx.ingress.kubernetes.io/proxy-send-timeout" "3600" -}}
+{{- $annotations := merge (deepCopy .Values.ingress.annotations) $required -}}
+{{- if and .Values.ingress.tls.enabled (not .Values.ingress.tls.secretName) }}
+{{- $altNames := .Values.ingress.hosts -}}
+{{- $cn := first .Values.ingress.hosts -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $tlsSecret -}}
+{{- $cert := "" -}}
+{{- $key := "" -}}
+{{- if and $existing $existing.data (index $existing.data "tls.crt") -}}
+  {{- $cert = index $existing.data "tls.crt" | b64dec -}}
+  {{- $key = index $existing.data "tls.key" | b64dec -}}
+{{- else -}}
+  {{- $ca := genCA (printf "%s-ingress-ca" $fullname) 3650 -}}
+  {{- $signed := genSignedCert $cn (list) $altNames 3650 $ca -}}
+  {{- $cert = $signed.Cert -}}
+  {{- $key = $signed.Key -}}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $tlsSecret }}
+  labels:
+    {{- include "swamp-serve.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $cert | b64enc | quote }}
+  tls.key: {{ $key | b64enc | quote }}
+---
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "swamp-serve.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $annotations | nindent 4 }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        {{- range .Values.ingress.hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ $tlsSecret }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ . | quote }}
+      http:
+        paths:
+          - path: {{ $.Values.ingress.path }}
+            pathType: {{ $.Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ $fullname }}
+                port:
+                  number: {{ $svcPort }}
+    {{- end }}
+{{- end }}

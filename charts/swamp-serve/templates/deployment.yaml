@@ -1,3 +1,20 @@
+{{- /*
+Trusted hosts for swamp's off-loopback Host-header (DNS-rebinding) defense.
+The WebSocket API rejects upgrades whose Host is not trusted, so when an ingress
+fronts the service its hostnames must be whitelisted or real WS clients get a
+403 "untrusted host". Ingress hosts are merged in automatically.
+*/ -}}
+{{- $trusted := .Values.serve.trustedHosts | default (list) -}}
+{{- if .Values.ingress.enabled -}}
+{{- $trusted = concat $trusted .Values.ingress.hosts -}}
+{{- /* server-alias hosts (comma-separated) must be trusted too */ -}}
+{{- $alias := index (.Values.ingress.annotations | default dict) "nginx.ingress.kubernetes.io/server-alias" -}}
+{{- if $alias -}}
+{{- range (splitList "," $alias) -}}
+{{- $trusted = append $trusted (trim .) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -88,8 +105,8 @@ spec:
             - "--cert-file=/tls/tls.crt"
             - "--key-file=/tls/tls.key"
             {{- end }}
-            {{- if .Values.serve.trustedHosts }}
-            - "--trusted-hosts={{ join "," .Values.serve.trustedHosts }}"
+            {{- if $trusted }}
+            - "--trusted-hosts={{ join "," $trusted }}"
             {{- end }}
             {{- range .Values.serve.extraArgs }}
             - {{ . | quote }}

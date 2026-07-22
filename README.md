@@ -93,6 +93,37 @@ enable `persistence.*` to back them with PVCs.
 WebSocket API itself requires a bearer token, so an unauthenticated WS handshake
 returns `401` — that is expected.
 
+## Ingress (ingress-nginx)
+
+Enable an Ingress that terminates client TLS and reverse-proxies to the service:
+
+```yaml
+ingress:
+  enabled: true
+  path: /
+  hosts:
+    - swamp-int.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/server-alias: swamp.example.com
+```
+
+Two swamp-specific details are handled for you:
+
+1. **Backend must be HTTPS.** swamp serve only listens on HTTPS (off-loopback
+   requires TLS — a hard, non-configurable rule), so the chart injects
+   `nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"` plus WebSocket proxy
+   timeouts. ingress-nginx does not verify the backend cert, so swamp's
+   self-signed cert is fine. (You can't use a plain-HTTP backend.)
+2. **Ingress hostnames are auto-trusted.** swamp's Host-header (DNS-rebinding)
+   defense rejects WebSocket upgrades whose `Host` isn't trusted — a client
+   hitting the ingress hostname would otherwise get `403 "untrusted host"`. The
+   chart automatically adds `ingress.hosts` **and** any `server-alias` hosts to
+   `--trusted-hosts`. Add further names via `serve.trustedHosts` if needed.
+
+Client TLS: with `ingress.tls.enabled` (default) and no `ingress.tls.secretName`,
+a self-signed cert is generated for `ingress.hosts`. Point `ingress.tls.secretName`
+at a real cert (e.g. cert-manager) for production.
+
 ## Key values
 
 | Key | Default | Description |
@@ -111,6 +142,13 @@ returns `401` — that is expected.
 | `persistence.repo.enabled` | `false` | Back the repo dir with a PVC. |
 | `persistence.home.enabled` | `false` | Back `~/.swamp` with a PVC. |
 | `service.type` / `service.port` | `ClusterIP` / `9090` | Service. |
+| `ingress.enabled` | `false` | Create an ingress-nginx Ingress. |
+| `ingress.className` | `nginx` | Ingress class. |
+| `ingress.path` / `ingress.pathType` | `/` / `Prefix` | Route path. |
+| `ingress.hosts` | `[swamp.example.com]` | Hostnames (auto-added to `--trusted-hosts`). |
+| `ingress.annotations` | `{}` | Merged over required backend-protocol/WS-timeout defaults. |
+| `ingress.tls.enabled` | `true` | Terminate client TLS at the ingress. |
+| `ingress.tls.secretName` | `""` | Existing TLS secret; else self-signed for `hosts`. |
 
 ## Production notes
 
