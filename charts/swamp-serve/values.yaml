@@ -50,8 +50,11 @@ serve:
 #   - existingSecret: reference a pre-existing kubernetes.io/tls secret.
 #   - cert/key:       inline PEM material.
 #   - otherwise:      a self-signed cert is generated at install time with SANs
-#                     covering the in-cluster Service DNS names. It is reused
-#                     across upgrades via a lookup of the existing secret.
+#                     covering the in-cluster Service DNS names + 127.0.0.1. It
+#                     is reused across upgrades via a lookup of the existing
+#                     secret. The generated secret also carries the signing CA at
+#                     `ca.crt` so swamp CLI clients can trust it via DENO_CERT
+#                     (see "Connecting the swamp CLI" in the README).
 # ---------------------------------------------------------------------------
 tls:
   enabled: true

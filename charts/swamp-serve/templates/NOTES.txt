@@ -30,4 +30,14 @@ requires a bearer token for principals listed in serve.admins:
 NOTE: a self-signed TLS certificate was generated for this release. Clients must
 trust it (or use -k / insecure) — supply your own via tls.existingSecret or
 tls.cert/tls.key for production.
+
+To connect a swamp CLI client (e.g. `swamp datastore status --server https://...`),
+trust the generated CA via DENO_CERT:
+
+   kubectl -n {{ .Release.Namespace }} get secret {{ include "swamp-serve.tlsSecretName" . }} \
+     -o jsonpath='{.data.ca\.crt}' | base64 -d > swamp-ca.crt
+   export DENO_CERT="$PWD/swamp-ca.crt"
+
+The CLI also needs a --token (authMode is token). See "Connecting the swamp CLI"
+in the chart README for minting one.
 {{- end }}

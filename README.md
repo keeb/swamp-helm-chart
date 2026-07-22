@@ -93,6 +93,55 @@ enable `persistence.*` to back them with PVCs.
 WebSocket API itself requires a bearer token, so an unauthenticated WS handshake
 returns `401` — that is expected.
 
+## Connecting the swamp CLI (`--server`)
+
+`swamp <cmd> --server https://…` needs to (a) **trust the server's TLS cert** and
+(b) **present a token** (the server runs `authMode: token`). The CLI has no
+`--cert`/`--insecure` flag and no way to skip verification, so trust comes from
+the `DENO_CERT` environment variable (swamp is a Deno binary).
+
+> Gotcha: if either the cert isn't trusted **or** the token is missing/invalid,
+> the CLI prints the same generic `Could not connect to wss://…`. A trusted-cert
+> request with no token is really a `401` — check the server logs
+> (`WebSocket auth rejected: no token provided`) to tell them apart.
+
+**1. Trust the cert.** The generated TLS secret includes the signing CA at
+`ca.crt` (trusting the leaf `tls.crt` alone is not enough):
+
+```bash
+kubectl -n <ns> get secret <release>-swamp-serve-tls \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d > swamp-ca.crt
+export DENO_CERT="$PWD/swamp-ca.crt"
+```
+
+**2. Get a token.** Mint one for an admin principal (needs a vault to store the
+plaintext). Run inside the pod so it lands in the server's datastore:
+
+```bash
+kubectl -n <ns> exec deploy/<release>-swamp-serve -c serve -- \
+  swamp vault create local_encryption tokens --repo-dir /repo
+kubectl -n <ns> exec deploy/<release>-swamp-serve -c serve -- \
+  swamp access token mint mytoken --principal 'user:token|admin' --repo-dir /repo --json
+# → copy the "token": "mytoken.<secret>" value
+```
+
+**3. Run the command** (port-forward, then use both):
+
+```bash
+kubectl -n <ns> port-forward svc/<release>-swamp-serve 9090:9090
+DENO_CERT="$PWD/swamp-ca.crt" \
+  swamp datastore status --server https://127.0.0.1:9090/ --token 'mytoken.<secret>'
+```
+
+> `emptyDir` repos are ephemeral — a vault/token created this way is lost on pod
+> restart. Enable `persistence.repo.enabled` to keep them, or supply a real cert
+> via `tls.existingSecret` so `DENO_CERT` isn't needed at all.
+>
+> **Existing installs:** the cert is reused across upgrades, so a release created
+> before this change won't have `ca.crt` yet. Delete the TLS secret and upgrade
+> to regenerate it: `kubectl -n <ns> delete secret <release>-swamp-serve-tls`,
+> then `helm upgrade …` and restart the deployment.
+
 ## Ingress (ingress-nginx)
 
 Enable an Ingress that terminates client TLS and reverse-proxies to the service:
