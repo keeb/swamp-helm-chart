@@ -1,0 +1,108 @@
+# ===========================================================================
+# EXAMPLE DEPLOYMENT OVERLAY — COPY AND FILL IN BEFORE USE.
+#
+# The chart itself ships no site-specific configuration: everything that
+# differs per deployment (hostnames, collective, admins, image, storage) lives
+# in a file like this one. Copy it, replace every FILL-ME below, and install:
+#
+#   cp values/example.yaml values/<my-deployment>.yaml
+#   $EDITOR values/<my-deployment>.yaml
+#   helm -n <namespace> upgrade --install serve ./charts/swamp-serve \
+#     --create-namespace -f values/<my-deployment>.yaml
+#
+# Keep filled-in copies out of this repository if the hostnames or collective
+# names are not public.
+#
+# Every FILL-ME below is required for an OAuth deployment behind an ingress.
+# The chart fails at template time with an explanatory message if one is
+# missed, rather than crash-looping the pod.
+# ===========================================================================
+
+image:
+  # FILL ME — a registry your cluster can pull from. `kind load` only works
+  # locally; a remote cluster needs a real registry reference.
+  repository: FILL-ME.registry.example.com/swamp-serve
+  tag: FILL-ME # e.g. 0.1.0 — avoid `latest` so rollbacks mean something
+  pullPolicy: IfNotPresent
+
+# Uncomment if the registry is private.
+# imagePullSecrets:
+#   - name: FILL-ME
+
+serve:
+  authMode: oauth
+
+  # FILL ME — swamp-club usernames (NOT user:<sub> ids; that form is for token
+  # mode). These principals get admin on access:* re-materialized on every
+  # start, so this list is the source of truth for admin access.
+  admins:
+    - FILL-ME-admin-username
+    - FILL-ME-second-admin-username
+
+  oauth:
+    # FILL ME — swamp-club collective slug(s). Anyone in one of these can log
+    # in; membership is managed in swamp-club, not here.
+    allowedCollectives:
+      - FILL-ME-collective-slug
+    # Optional: individual usernames admitted regardless of collective.
+    allowedUsers: []
+    # Leave empty unless pointing at a non-default swamp-club deployment.
+    provider: ""
+    # Leave empty on a first deployment — the server self-registers via the
+    # device flow and prints a verification URL to the pod log. Paste the
+    # resulting client ID here afterwards to make restarts non-interactive.
+    clientId: ""
+    groupRefreshInterval: "4h"
+
+  vault:
+    ensure: true
+    type: local_encryption
+    name: serve
+
+# The server process needs its own swamp-club credential (serve:* scope) —
+# there is no browser in a pod to run `swamp auth login`.
+#
+#   swamp auth token create --collective <slug> --scopes 'serve:*' --name <n>
+#   kubectl -n <ns> create secret generic swamp-serve-auth \
+#     --from-literal=SWAMP_API_KEY=swamp_org_...
+#
+swampAuth:
+  existingSecret: FILL-ME-secret-name # e.g. swamp-serve-auth
+  existingSecretKey: SWAMP_API_KEY
+
+# The OAuth client credentials and any minted tokens live in the repo vault.
+# Without persistence they are lost on restart and the device flow runs again.
+persistence:
+  repo:
+    enabled: true
+    size: 5Gi
+    storageClass: "" # FILL ME if the cluster has no usable default
+  home:
+    enabled: true
+    size: 2Gi
+    storageClass: ""
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    # FILL ME — the primary hostname. Auto-added to --trusted-hosts, so a WS
+    # client hitting it is not rejected by the DNS-rebinding defense.
+    - FILL-ME.example.com
+  # Optional second hostname; also auto-added to --trusted-hosts:
+  #   nginx.ingress.kubernetes.io/server-alias: FILL-ME-alt.example.com
+  annotations: {}
+  tls:
+    enabled: true
+    # FILL ME — an existing cert (e.g. from cert-manager). Left empty, the
+    # chart generates a self-signed cert, which browsers and the CLI will
+    # reject without extra trust configuration.
+    secretName: ""
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 2Gi

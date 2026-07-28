@@ -1,3 +1,4 @@
+{{- include "swamp-serve.validate" . -}}
 {{- /*
 Trusted hosts for swamp's off-loopback Host-header (DNS-rebinding) defense.
 The WebSocket API rejects upgrades whose Host is not trusted, so when an ingress
@@ -41,6 +42,10 @@ spec:
         # Roll pods when the generated cert changes.
         checksum/tls: {{ include (print $.Template.BasePath "/tls-secret.yaml") . | sha256sum }}
         {{- end }}
+        {{- if and .Values.swampAuth.apiKey (not .Values.swampAuth.existingSecret) }}
+        # Roll pods when the inline API key changes.
+        checksum/auth: {{ include (print $.Template.BasePath "/auth-secret.yaml") . | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -70,9 +75,19 @@ spec:
               else
                 echo "swamp repository already present at ${REPO}"
               fi
+              {{- if .Values.serve.vault.ensure }}
+              # token mode stores minted token secrets here; oauth mode stores
+              # the registered OAuth client credentials here.
+              if swamp vault get "{{ .Values.serve.vault.name }}" --repo-dir "${REPO}" >/dev/null 2>&1; then
+                echo "vault {{ .Values.serve.vault.name }} already present"
+              else
+                echo "Creating {{ .Values.serve.vault.type }} vault {{ .Values.serve.vault.name }}"
+                swamp vault create {{ .Values.serve.vault.type }} {{ .Values.serve.vault.name }} \
+                  --repo-dir "${REPO}" --no-telemetry --log
+              fi
+              {{- end }}
           env:
-            - name: HOME
-              value: /home/swamp
+            {{- include "swamp-serve.env" . | nindent 12 }}
           volumeMounts:
             - name: home
               mountPath: /home/swamp
@@ -101,6 +116,26 @@ spec:
             {{- if .Values.serve.admins }}
             - "--admins={{ join "," .Values.serve.admins }}"
             {{- end }}
+            {{- if eq .Values.serve.authMode "oauth" }}
+            {{- with .Values.serve.oauth.allowedCollectives }}
+            - "--allowed-collectives={{ join "," . }}"
+            {{- end }}
+            {{- with .Values.serve.oauth.allowedUsers }}
+            - "--allowed-users={{ join "," . }}"
+            {{- end }}
+            {{- with .Values.serve.oauth.provider }}
+            - "--oauth-provider={{ . }}"
+            {{- end }}
+            {{- with .Values.serve.oauth.clientId }}
+            - "--oauth-client-id={{ . }}"
+            {{- end }}
+            {{- with .Values.serve.oauth.groupsField }}
+            - "--groups-field={{ . }}"
+            {{- end }}
+            {{- with .Values.serve.oauth.groupRefreshInterval }}
+            - "--group-refresh-interval={{ . }}"
+            {{- end }}
+            {{- end }}
             {{- if .Values.tls.enabled }}
             - "--cert-file=/tls/tls.crt"
             - "--key-file=/tls/tls.key"
@@ -112,12 +147,21 @@ spec:
             - {{ . | quote }}
             {{- end }}
           env:
-            - name: HOME
-              value: /home/swamp
+            {{- include "swamp-serve.env" . | nindent 12 }}
           ports:
             - name: serve
               containerPort: {{ .Values.serve.port }}
               protocol: TCP
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: /
+              port: serve
+              scheme: {{ if .Values.tls.enabled }}HTTPS{{ else }}HTTP{{ end }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- end }}
           readinessProbe:
             httpGet:
               path: /

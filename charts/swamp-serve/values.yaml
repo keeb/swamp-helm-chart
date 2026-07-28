@@ -34,8 +34,13 @@ serve:
   # An init container runs `swamp repo init` here on first start if empty.
   repoDir: /repo
   # none | token | oauth. Off-loopback requires token or oauth.
+  #   token — admins mint and hand out server tokens (air-gapped friendly).
+  #   oauth — users log in through swamp-club with `swamp auth server-login`;
+  #           admission is driven by collective membership. See `oauth` below.
   authMode: token
-  # Principal IDs granted admin access (used by token/oauth modes).
+  # Principals granted admin access. The format follows authMode:
+  #   token — `user:<subject-id>` (e.g. "user:token|admin")
+  #   oauth — plain swamp-club usernames (e.g. "alice"), resolved at startup
   admins:
     - "user:token|admin"
   # Disable the built-in scheduler (scheduled workflow execution).
@@ -44,6 +49,74 @@ serve:
   trustedHosts: []
   # Any additional raw flags passed verbatim to `swamp serve`.
   extraArgs: []
+
+  # -------------------------------------------------------------------------
+  # OAuth admission (only rendered when authMode is "oauth").
+  #
+  # At least one of allowedCollectives / allowedUsers is REQUIRED — the chart
+  # refuses to render otherwise, matching the server's own requirement. A user
+  # matching either policy is admitted; membership is re-checked from the
+  # provider every groupRefreshInterval.
+  # -------------------------------------------------------------------------
+  oauth:
+    # swamp-club collective slugs whose members may connect.
+    allowedCollectives: []
+    # Individual swamp-club usernames (or `user:<sub>` subjects) to admit.
+    allowedUsers: []
+    # OAuth authorization server. Empty = the server default
+    # (https://swamp-club.com). Custom values must be HTTPS unless localhost.
+    provider: ""
+    # Client ID from a previous registration. Leave empty to let the server
+    # self-register on first start via the device flow — the verification URL
+    # and code are printed to the pod log (see NOTES / README).
+    clientId: ""
+    # Userinfo field carrying group memberships. Empty = server default
+    # ("collectives").
+    groupsField: ""
+    # How often IdP group memberships are re-fetched (e.g. 30m, 4h, or 0 to
+    # disable). Empty = server default (4h).
+    groupRefreshInterval: ""
+
+  # -------------------------------------------------------------------------
+  # Vault bootstrap. token mode needs a vault to store minted token secrets;
+  # oauth mode needs one to persist the registered OAuth client credentials
+  # across restarts. The init container creates it if it does not exist.
+  # -------------------------------------------------------------------------
+  vault:
+    ensure: true
+    type: local_encryption
+    name: serve
+
+# ---------------------------------------------------------------------------
+# swamp-club credentials for the SERVER PROCESS itself.
+#
+# `--auth-mode token` and `--auth-mode oauth` require the server to be
+# authenticated to swamp-club (an API key with the `serve:*` scope) — this is
+# separate from how *clients* authenticate to the server. There is no browser
+# in a pod, so supply a key rather than relying on `swamp auth login`:
+#
+#   swamp auth token create --collective <slug> --scopes 'serve:*'
+#   kubectl -n <ns> create secret generic swamp-serve-auth \
+#     --from-literal=SWAMP_API_KEY=swamp_org_...
+#
+# Then set swampAuth.existingSecret: swamp-serve-auth.
+# ---------------------------------------------------------------------------
+swampAuth:
+  # Preferred: name of an existing Secret holding the API key.
+  existingSecret: ""
+  # Key within that Secret.
+  existingSecretKey: SWAMP_API_KEY
+  # Inline key — creates a Secret from this value. Convenient for a quick test,
+  # but it lands in the Helm release history in plaintext.
+  apiKey: ""
+  # Escape hatch: set true if `~/.swamp` credentials are already baked into the
+  # image or carried on the home PVC, so no API key is needed. Only affects the
+  # chart's pre-flight check.
+  assumeExistingLogin: false
+
+# Extra environment variables for the serve and init containers, e.g.
+# SWAMP_CLUB_URL for a non-default swamp-club deployment.
+extraEnv: []
 
 # ---------------------------------------------------------------------------
 # TLS. Required whenever serve.host is off-loopback (the default).
@@ -114,6 +187,16 @@ ingress:
 
 # Probes hit the unauthenticated GET / health endpoint. Scheme follows tls.enabled.
 probes:
+  # The startup probe gates readiness/liveness until the server is actually
+  # listening. Keep it enabled for OAuth: on first start the server pauses to
+  # register itself with swamp-club (device flow) and would otherwise be killed
+  # by the liveness probe before anyone can approve the code in a browser.
+  startup:
+    enabled: true
+    periodSeconds: 10
+    timeoutSeconds: 3
+    # 60 x 10s = 10 minutes to finish first-boot OAuth registration.
+    failureThreshold: 60
   readiness:
     initialDelaySeconds: 3
     periodSeconds: 10

@@ -24,6 +24,45 @@ requires a bearer token for principals listed in serve.admins:
 {{- range .Values.serve.admins }}
   - {{ . }}
 {{- end }}
+{{- if not (or .Values.swampAuth.existingSecret .Values.swampAuth.apiKey) }}
+
+NOTE: no swamp-club API key is configured (swampAuth.existingSecret /
+swampAuth.apiKey). token mode expects the server process itself to be
+authenticated to swamp-club with the `serve:*` scope — if the pod fails to
+start, check the log for an authentication error and supply a key.
+{{- end }}
+{{- end }}
+{{- if eq .Values.serve.authMode "oauth" }}
+
+NOTE: authMode is "oauth". Users log in themselves — no tokens to distribute:
+
+   swamp auth server-login --server wss://{{ if .Values.ingress.enabled }}{{ first .Values.ingress.hosts }}{{ else }}<server-host>{{ end }}
+
+Admission is granted to:
+{{- with .Values.serve.oauth.allowedCollectives }}
+  collectives: {{ join ", " . }}
+{{- end }}
+{{- with .Values.serve.oauth.allowedUsers }}
+  users:       {{ join ", " . }}
+{{- end }}
+Admins: {{ join ", " .Values.serve.admins }}
+{{- if not .Values.serve.oauth.clientId }}
+
+FIRST START: the server registers itself as an OAuth client with swamp-club via
+the device flow. It prints a verification URL and a code and waits — nobody can
+log in until that is approved in a browser. Watch for it now:
+
+   kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "swamp-serve.fullname" . }} -c serve
+
+The startup probe allows {{ mul .Values.probes.startup.periodSeconds .Values.probes.startup.failureThreshold }}s for this. Once approved, the credentials are
+stored in the "{{ .Values.serve.vault.name }}" vault and later starts skip the flow.
+{{- if not .Values.persistence.repo.enabled }}
+
+WARNING: persistence.repo is disabled, so the repo (and that vault) live in an
+emptyDir — the device flow will run again on every pod restart. Set
+persistence.repo.enabled=true for anything long-lived.
+{{- end }}
+{{- end }}
 {{- end }}
 {{- if and .Values.tls.enabled (not .Values.tls.existingSecret) (not .Values.tls.cert) }}
 
@@ -38,6 +77,11 @@ trust the generated CA via DENO_CERT:
      -o jsonpath='{.data.ca\.crt}' | base64 -d > swamp-ca.crt
    export DENO_CERT="$PWD/swamp-ca.crt"
 
-The CLI also needs a --token (authMode is token). See "Connecting the swamp CLI"
-in the chart README for minting one.
+{{- if eq .Values.serve.authMode "oauth" }}
+The CLI also needs to authenticate — run `swamp auth server-login --server ...`
+once per user. See "Connecting the swamp CLI" in the chart README.
+{{- else }}
+The CLI also needs a --token (authMode is {{ .Values.serve.authMode }}). See
+"Connecting the swamp CLI" in the chart README for minting one.
+{{- end }}
 {{- end }}

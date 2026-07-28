@@ -21,6 +21,28 @@ CTX="kind-${CLUSTER}"
 cleanup() { [[ "${KEEP:-0}" == "1" ]] || kind delete cluster --name "${CLUSTER}" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
+echo "==> Rendering chart (lint + values matrix)"
+helm lint "${CHART}" >/dev/null
+# Positive: OAuth with an admission policy, an API key and an ingress renders.
+helm template t "${CHART}" \
+  --set serve.authMode=oauth \
+  --set serve.admins='{alice}' \
+  --set serve.oauth.allowedCollectives='{acme-corp}' \
+  --set swampAuth.existingSecret=acme-auth \
+  --set ingress.enabled=true --set ingress.hosts='{a.example.com}' >/dev/null
+# Negative: each of these must be refused at template time, not at runtime.
+refuses() {
+  local what="$1"; shift
+  if helm template t "${CHART}" "$@" >/dev/null 2>&1; then
+    echo "FAIL: chart rendered despite ${what}" >&2
+    exit 1
+  fi
+}
+refuses "oauth without an admission policy" --set serve.authMode=oauth --set swampAuth.existingSecret=x
+refuses "oauth without a swamp-club API key" --set serve.authMode=oauth --set serve.oauth.allowedCollectives='{acme}'
+refuses "off-loopback bind without TLS" --set tls.enabled=false
+refuses "an unknown auth mode" --set serve.authMode=bogus
+
 echo "==> Building image ${IMAGE}"
 IMAGE="${IMAGE}" bash "${HERE}/docker/build.sh"
 
