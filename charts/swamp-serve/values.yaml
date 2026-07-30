@@ -154,6 +154,11 @@ persistence:
 service:
   type: ClusterIP
   port: 9090
+  # Pin the node port instead of letting Kubernetes assign a random one from the
+  # 30000-32767 range. Only honoured for type NodePort/LoadBalancer. Required
+  # when something outside the cluster targets a fixed port — e.g. a kind
+  # `extraPortMappings` entry, which maps one specific container port to the host.
+  nodePort: ""
   annotations: {}
 
 # ---------------------------------------------------------------------------

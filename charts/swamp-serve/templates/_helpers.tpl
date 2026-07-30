@@ -85,7 +85,7 @@ swamp loads extensions through an embedded runtime under ~/.swamp.
       key: {{ include "swamp-serve.apiKeySecretKey" . }}
 {{- end }}
 {{- with .Values.extraEnv }}
-{{- toYaml . }}
+{{ toYaml . }}
 {{- end }}
 {{- end }}
 

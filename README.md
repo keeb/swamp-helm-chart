@@ -45,8 +45,8 @@ surface in seconds rather than after an image build.
 Or step by step:
 
 ```bash
-# 1. Build the image (bakes in the swamp binary from your PATH)
-SWAMP_BIN=$(command -v swamp) IMAGE=swamp-serve:local ./deploy/docker/build.sh
+# 1. Build the image (the installer fetches the swamp binary at build time)
+IMAGE=swamp-serve:local ./deploy/docker/build.sh
 
 # 2. Create a cluster and load the image (kind has no registry — copy it in)
 kind create cluster --name swampdemo
@@ -90,6 +90,86 @@ For production also consider: a real TLS cert via `tls.existingSecret`
 (e.g. cert-manager) instead of the generated self-signed one, real
 `serve.admins` principals, and `persistence.*` PVCs so the repo/datastore
 survive restarts.
+
+## Updating swamp
+
+`swamp serve` is updated by **rebuilding the image**, not in place.
+
+`swamp update` does not work inside the pod. The container runs as uid `65532`
+with `runAsNonRoot` and all capabilities dropped, while the binary is root-owned
+at `/usr/local/bin/swamp`, so it fails with
+`Cannot update /usr/local/bin/swamp: permission denied`. Even with root it would
+be the wrong move — the new binary would live only in the container's writable
+layer and vanish on the next pod replacement, silently reverting the version.
+
+```bash
+# 1. Rebuild. --no-cache is REQUIRED when tracking `stable`: the version is a
+#    build arg, so an unchanged `SWAMP_VERSION=stable` hits the Docker layer
+#    cache and silently rebuilds the OLD binary.
+docker build --no-cache --build-arg SWAMP_VERSION=stable \
+  -t swamp-serve:local -f deploy/docker/Dockerfile deploy/docker
+
+# 2. Confirm what you actually got before shipping it
+docker run --rm --entrypoint swamp swamp-serve:local --version
+
+# 3a. kind: load the image, then restart
+kind load docker-image swamp-serve:local --name <cluster>
+kubectl -n <ns> rollout restart deploy/<release>-swamp-serve
+
+# 3b. Remote cluster: push a NEW tag and roll it out. Do not overwrite a tag
+#     in place — with `pullPolicy: IfNotPresent` nodes keep the cached layer.
+IMAGE=ghcr.io/<you>/swamp-serve:<new-version> ./deploy/docker/build.sh --push
+helm -n <ns> upgrade serve ./deploy/charts/swamp-serve \
+  -f values/<your-overlay>.yaml --set image.tag=<new-version>
+
+# 4. Verify
+kubectl -n <ns> exec deploy/<release>-swamp-serve -c serve -- swamp --version
+```
+
+`build.sh` takes `SWAMP_VERSION` (default `stable`) but exposes no `--no-cache`
+flag, which is why step 1 calls `docker build` directly. Pin a specific release
+with `SWAMP_VERSION=<version> ./deploy/docker/build.sh` — pinned versions change
+the build arg, so they invalidate the cache on their own.
+
+### An update does not disturb authentication
+
+No device flow, and no `swamp auth server-login` for your users. The two pieces
+of auth state both live outside the container image:
+
+| State | Lives in | Survives an image swap? |
+| --- | --- | --- |
+| OAuth client creds, resolved admins, server tokens | repo vault, on the `persistence.repo` PVC | yes |
+| Grants, session records | the datastore tier (PVC, S3, Mongo, …) | yes |
+
+A healthy post-update start logs `Using stored OAuth client credentials from
+vault` and `Using cached admin resolution` for each admin. If it instead prints a
+device-flow URL, the repo volume was lost — check `persistence.repo`, not the
+update.
+
+Two unrelated operations *do* invalidate credentials, so don't confuse them with
+an update: repointing the datastore at a **new or empty namespace** (drops
+session records — everyone re-runs `swamp auth server-login`), and clearing
+`oauth-client-id` from the vault to **re-register** (repeats the device flow).
+
+The init container runs `swamp repo upgrade` on every start, so repo-format
+migrations are applied automatically and idempotently.
+
+### Client/server version skew
+
+Some operations are served by the server and need both ends recent — notably
+`swamp extension pull --server`, which on an older server hangs until the client
+gives up with `Request timed out … the server may not support this operation`.
+Read paths like `swamp extension list --server` keep working, which makes it look
+like auth or the datastore rather than a version gap.
+
+To locate the layer, run the same pull four ways — local repo, in-pod
+(`kubectl exec … --repo-dir /repo`), `--server` read, `--server` write. The first
+one that hangs names it.
+
+Note that **local dev builds all report `20260206.200442.0-sha.`** — a
+placeholder, not a date, recognisable by the empty `-sha.` suffix. A dev build is
+usually *newer* than published stable, so never infer skew direction from it.
+Compare against the server's real CalVer from `swamp --version` in the pod.
 
 ## How it works
 
