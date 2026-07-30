@@ -66,4 +66,9 @@ echo "==> Helm test"
 helm --kube-context "${CTX}" -n "${NS}" test "${RELEASE}"
 
 echo "==> SUCCESS: swamp serve is running and healthy on kind."
-[[ "${KEEP:-0}" == "1" ]] && echo "    Cluster '${CLUSTER}' left running (KEEP=1). Delete with: kind delete cluster --name ${CLUSTER}"
+# Must not be the final command as a bare `[[ ]] && echo`: when KEEP is unset the
+# test is false, the compound returns 1, and the script exits 1 on a good run.
+if [[ "${KEEP:-0}" == "1" ]]; then
+  echo "    Cluster '${CLUSTER}' left running (KEEP=1). Delete with: kind delete cluster --name ${CLUSTER}"
+fi
+exit 0

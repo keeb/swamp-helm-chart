@@ -63,30 +63,29 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          # Runs the image's entrypoint in prep-only mode (no args => prepare the
+          # repo and exit 0), so init logic lives in exactly one place:
+          # docker/entrypoint.sh. It is idempotent against a durable repo volume:
+          # it initializes only when the marker is absent and otherwise runs
+          # `swamp repo upgrade`, which preserves the repoId that `repo init
+          # --force` would regenerate (breaking datastore namespace ownership).
           command:
-            - /bin/bash
-            - -c
-            - |
-              set -euo pipefail
-              REPO="{{ .Values.serve.repoDir }}"
-              if [ ! -f "${REPO}/.swamp.yaml" ]; then
-                echo "Initializing swamp repository at ${REPO}"
-                swamp repo init "${REPO}" --no-telemetry --log
-              else
-                echo "swamp repository already present at ${REPO}"
-              fi
-              {{- if .Values.serve.vault.ensure }}
-              # token mode stores minted token secrets here; oauth mode stores
-              # the registered OAuth client credentials here.
-              if swamp vault get "{{ .Values.serve.vault.name }}" --repo-dir "${REPO}" >/dev/null 2>&1; then
-                echo "vault {{ .Values.serve.vault.name }} already present"
-              else
-                echo "Creating {{ .Values.serve.vault.type }} vault {{ .Values.serve.vault.name }}"
-                swamp vault create {{ .Values.serve.vault.type }} {{ .Values.serve.vault.name }} \
-                  --repo-dir "${REPO}" --no-telemetry --log
-              fi
-              {{- end }}
+            - /usr/local/bin/entrypoint.sh
+          args: []
           env:
+            - name: SWAMP_REPO_DIR
+              value: {{ .Values.serve.repoDir | quote }}
+            {{- if .Values.serve.vault.ensure }}
+            # token mode stores minted token secrets here; oauth mode stores
+            # the registered OAuth client credentials here.
+            - name: SWAMP_INIT_VAULT
+              value: {{ .Values.serve.vault.name | quote }}
+            - name: SWAMP_INIT_VAULT_TYPE
+              value: {{ .Values.serve.vault.type | quote }}
+            {{- else }}
+            - name: SWAMP_INIT_VAULT
+              value: ""
+            {{- end }}
             {{- include "swamp-serve.env" . | nindent 12 }}
           volumeMounts:
             - name: home

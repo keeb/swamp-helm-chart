@@ -23,11 +23,16 @@ RUN apt-get update \
     && useradd -u 65532 -g 65532 -m -d /home/swamp -s /usr/sbin/nologin swamp \
     && mkdir -p /repo && chown 65532:65532 /repo
 
+# Entrypoint wrapper: makes repo prep idempotent against a durable (PVC) repo
+# volume, then execs swamp with the container args. See docker/entrypoint.sh.
+# Set SWAMP_INIT_SKIP=1 to bypass prep and run the CLI bare.
+COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
+
 USER 65532:65532
 ENV HOME=/home/swamp
 WORKDIR /home/swamp
 
 EXPOSE 9090
 
-ENTRYPOINT ["swamp"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["serve"]
