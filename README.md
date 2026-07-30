@@ -8,6 +8,7 @@ tooling to build the image and verify it locally on [kind](https://kind.sigs.k8s
 deploy/
 ├── docker/
 │   ├── Dockerfile          # debian:bookworm-slim + the swamp binary
+│   ├── entrypoint.sh       # idempotent repo prep, then exec swamp
 │   └── build.sh            # stages the binary and builds swamp-serve:local
 ├── charts/swamp-serve/     # the Helm chart
 ├── values/
@@ -206,14 +207,45 @@ Two consequences worth planning for:
 
 - The pod is not listening during this window. The chart ships a `startupProbe`
   (10 minutes by default, `probes.startup.*`) so the liveness probe does not
-  kill the pod mid-registration. Disabling it will break the bootstrap.
-- The resulting credentials are stored in the repo vault. With the default
-  `emptyDir` repo they are lost on every restart and the device flow repeats —
-  set `persistence.repo.enabled: true`, and optionally paste the registered
-  client ID into `serve.oauth.clientId` to skip the flow entirely.
+  kill the pod mid-registration. Disabling it will break the bootstrap. If you
+  deploy your own chart instead of this one and it has no `startupProbe`, raise
+  the liveness `initialDelaySeconds` to cover the whole approval window —
+  otherwise liveness kills the pod partway through and the flow never finishes.
+- The resulting credentials are stored in the repo vault. On the default
+  `emptyDir` repo they survive container restarts but **not** pod replacement,
+  so every `helm upgrade` or reschedule discards them and the device flow
+  repeats. Set `persistence.repo.enabled: true` to keep them, or pre-seed the
+  vault (below) to skip the flow entirely.
 
 The pod needs egress to `https://swamp-club.com` (or whatever
 `serve.oauth.provider` points at) for both registration and group refresh.
+
+#### Skipping the device flow with a pre-seeded vault
+
+Blocking first boot on a human approving a code in a browser is not viable for
+an automated deploy — and on an `emptyDir` repo it recurs on every release. To
+avoid the flow, seed the credentials of an already-registered client into the
+repo vault before `swamp serve` starts.
+
+`serve.oauth.clientId` on its own is **not** enough. The server takes the
+pre-registered path only when it finds a client secret alongside the ID, and it
+then still has to turn admin usernames into `user:<sub>` subjects. All three of
+these must be present:
+
+| vault key | value |
+| --- | --- |
+| `oauth-client-id` | the registered client's ID (or pass it as `serve.oauth.clientId`) |
+| `oauth-client-secret` | that client's secret — **required**, or the server falls back to the device flow |
+| `oauth-resolved-admins` | JSON map of username to subject, e.g. `{"alice":"<sub>","bob":"<sub>"}` |
+
+Supply `oauth-resolved-admins` for every principal in `serve.admins` *and*
+`serve.oauth.allowedUsers` (allowed users are keyed `allowed:<username>`).
+Without it — and without a stored bootstrap access token — startup fails with
+`Cannot resolve usernames — no access token and no cached resolutions`, because
+usernames that never resolve to subjects would match no grants.
+
+Seeding from a Kubernetes Secret in the entrypoint works on an `emptyDir` repo,
+which makes it the practical option when a PVC is not available.
 
 #### User login
 
@@ -324,7 +356,7 @@ at a real cert (e.g. cert-manager) for production.
 | `serve.oauth.allowedCollectives` | `[]` | swamp-club collectives admitted (oauth). One of this/`allowedUsers` is required. |
 | `serve.oauth.allowedUsers` | `[]` | Individual usernames or `user:<sub>` subjects admitted (oauth). |
 | `serve.oauth.provider` | `""` | OAuth server URL. Empty = `https://swamp-club.com`. |
-| `serve.oauth.clientId` | `""` | Pre-registered client ID; empty = device-flow self-registration on first start. |
+| `serve.oauth.clientId` | `""` | Pre-registered client ID. Only skips the device flow when an `oauth-client-secret` is also in the vault — see [Skipping the device flow](#skipping-the-device-flow-with-a-pre-seeded-vault). Empty = self-registration on first start. |
 | `serve.oauth.groupsField` | `""` | Userinfo field for memberships. Empty = `collectives`. |
 | `serve.oauth.groupRefreshInterval` | `""` | Membership re-check interval. Empty = `4h`. |
 | `serve.vault.ensure` | `true` | Init container creates the vault holding token/OAuth-client secrets. |
@@ -349,6 +381,54 @@ at a real cert (e.g. cert-manager) for production.
 | `ingress.annotations` | `{}` | Merged over required backend-protocol/WS-timeout defaults. |
 | `ingress.tls.enabled` | `true` | Terminate client TLS at the ingress. |
 | `ingress.tls.secretName` | `""` | Existing TLS secret; else self-signed for `hosts`. |
+
+## Running your own chart
+
+Plenty of organisations deploy `swamp serve` through an in-house generic-service
+chart and cannot adopt this one. This chart is then a reference: it encodes the
+server's hard refusals and the non-obvious operational requirements, and
+`docker/entrypoint.sh` is directly reusable regardless of which chart starts it.
+
+If you are wiring `swamp serve` into your own chart, these are the requirements
+that are easy to miss and expensive to discover in production:
+
+1. **Repo prep must be idempotent, and `repo init` is not.** An entrypoint that
+   runs `swamp repo init` unconditionally works on first start and then exits 1
+   with `Repository already initialized` on every subsequent start against the
+   same volume. This bites sooner than it looks: an `emptyDir` repo survives
+   container restarts, so a crash-looping pod hits it on restart #2 even without
+   a PVC, and the second failure has a different cause than the first. Branch on
+   the `.swamp.yaml` marker: `swamp repo init` when absent, `swamp repo upgrade`
+   when present. Never `repo init --force` — it regenerates the `repoId`, and a
+   configured datastore then refuses the namespace it already owns.
+2. **Guard every `vault create`.** A duplicate exits 1 (`Vault already exists`).
+   `swamp vault get <name>` exits 0 when present, 1 when missing.
+3. **Point serve at the repo you prepared.** `swamp serve` resolves the repo from
+   the working directory unless `--repo-dir` is passed or `SWAMP_REPO_DIR` is
+   exported, so a successful init can still be followed by
+   `Not a swamp repository: /home/swamp`.
+4. **Off-loopback binding requires TLS *and* auth.** This is a non-configurable
+   refusal, so the pod must serve HTTPS and your ingress backend protocol must be
+   HTTPS. There is no plain-HTTP backend.
+5. **Every hostname clients connect through must be trusted.** The Host-header
+   (DNS-rebinding) defence answers `403 untrusted host` to WebSocket upgrades
+   otherwise. Include ingress hosts and any server aliases in `--trusted-hosts`.
+6. **Give the first boot room.** `GET /` is unauthenticated and safe for probes,
+   but under `authMode: oauth` the server is not listening while it waits for
+   device-flow approval. Use a `startupProbe`, or a liveness
+   `initialDelaySeconds` long enough to cover the approval window — or avoid the
+   wait entirely by pre-seeding the vault (see
+   [Skipping the device flow](#skipping-the-device-flow-with-a-pre-seeded-vault)).
+7. **Both `token` and `oauth` need a swamp-club API key on the server process**,
+   with the `serve:*` scope, supplied from a Secret. See
+   [Authentication](#authentication).
+8. **Do not scale past one replica.** Vault and token state is per-pod; a second
+   replica breaks auth. Use `Recreate`, and size memory with headroom — the
+   process idles around 275-300Mi and in-container CLI runs need more, so a
+   512Mi limit gets OOMKilled.
+
+`./deploy/verify.sh` asserts the refusals in 1, 4 and 7 at template time, so it
+is worth reading even if you never install this chart.
 
 ## Production notes
 
